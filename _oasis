@@ -1,0 +1,19 @@
+Name: ocaml-pinboard
+Version: 0.1
+Synopsis: OCaml interface to the Pinboard API
+Authors: Rolph Recto (rolph.recto@gmail.com)
+License: MIT
+
+OASISFormat: 0.4
+BuildTools: ocamlbuild
+Plugins: META (0.4), DevFiles (0.4)
+
+Executable "pinboard"
+  Path: src
+  MainIs: pinboard.ml
+  BuildDepends:
+    threads,
+    core,
+    async,
+    cohttp.async,
+    yojson
