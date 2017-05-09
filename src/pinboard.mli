@@ -3,6 +3,7 @@ open Async.Std
 
 type bookmark
 type tag
+type note
 
 module type API = sig
   (* parametrize the deferred type we're going to use so we can implement
@@ -57,6 +58,20 @@ module type API = sig
    * were used.
    *)
   val all_tags : unit -> ((tag * int) list) deferred
+
+  (* https://api.pinboard.in/v1/notes/list
+   *
+   * Returns a list of the user's notes
+   * This DOES NOT return the text of a note!
+   *)
+  val all_notes : unit -> (note list) deferred
+
+  (* https://api.pinboard.in/v1/notes/ID
+   *
+   * Returns an individual user note. The hash property is a 20 character long
+   * sha1 hash of the note text.
+   *)
+  val note : string -> note deferred
 end
 
 module AsyncAPI : API with type 'a deferred := 'a Deferred.t

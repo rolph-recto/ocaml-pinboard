@@ -1,6 +1,7 @@
 (* pinboard.ml *)
 
-(* uncomment for utop
+(*
+ * uncomment for utop
 #require "core.top"
 #require "core.syntax"
 #require "async"
@@ -23,6 +24,15 @@ type bookmark = {
   meta: string;
 }
 
+type note = {
+  id: string;
+  hash: string;
+  title: string;
+  created_at: Time.t;
+  updated_at: Time.t;
+  text: string;
+}
+
 module type API = sig
   type 'a deferred
 
@@ -42,6 +52,10 @@ module type API = sig
   val suggest_tag : string -> (tag list * tag list) deferred
 
   val all_tags : unit -> ((tag * int) list) deferred
+
+  val all_notes : unit -> (note list) deferred
+
+  val note : string -> note deferred
 end
 
 module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
@@ -88,8 +102,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
 
     let meta = JSON.Util.member "meta" json |> JSON.Util.to_string in
 
-    { url=url; title=title; description=description; tags=tags;
-      toread=toread; shared=shared; time=time; meta=meta; }
+    { url; title; description; tags; toread; shared; time; meta; }
   ;;
 
   let bookmarks_of_json (json:JSON.json) : bookmark list =
@@ -170,10 +183,41 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
 
   let all_tags () =
     let q1 = Uri.of_string (base_url "tags/get") in
+    let kv_to_int (tag, n) = (tag, n |> JSON.Util.to_string |> int_of_string) in
     call_endpoint q1 >>| fun res ->
     res |> JSON.from_string |> JSON.Util.to_assoc
-        |> List.map ~f:(fun (tag, n) -> (tag, n |> JSON.Util.to_string |> int_of_string))
+        |> List.map ~f:kv_to_int
   ;;
 
+  let note_of_json (has_text : bool) (json : JSON.json) : note =
+    let id = JSON.Util.member "id" json |> JSON.Util.to_string in
+    let hash = JSON.Util.member "hash" json |> JSON.Util.to_string in
+    let title = JSON.Util.member "title" json |> JSON.Util.to_string in
+    let created_at = JSON.Util.member "created_at" json |> JSON.Util.to_string
+                  |> Time.of_string in
+    let updated_at = JSON.Util.member "created_at" json |> JSON.Util.to_string
+                  |> Time.of_string in
+    let text =
+      if has_text
+      then JSON.Util.member "text" json |> JSON.Util.to_string
+      else ""
+    in
+    { id; hash; title; created_at; updated_at; text }
+  ;;
+  
+  let all_notes () =
+    let q1 = Uri.of_string (base_url "notes/list") in
+    call_endpoint q1 >>| fun res ->
+    res |> JSON.from_string |> JSON.Util.to_assoc
+        |> (fun dict -> List.Assoc.find dict "notes")
+        |> Option.value_map ~default:[] ~f:JSON.Util.to_list
+        |> List.map ~f:(note_of_json false)
+  ;;
+
+  let note id =
+    let q1 = Uri.of_string (base_url ("notes/" ^ id)) in
+    call_endpoint q1 >>| fun res ->
+    res |> JSON.from_string |> note_of_json true
+  ;;
 end
 
