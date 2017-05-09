@@ -6,19 +6,6 @@
 
 open Core.Std
 
-type api_format = | JSON | XML
-
-let string_of_format fmt =
-  match fmt with
-  | JSON -> "json"
-  | XML -> "xml"
-;;
-
-type request_info = {
-  api_token: string;
-  api_format: api_format;
-}
-
 type tag = string
 
 type bookmark = {
@@ -35,22 +22,22 @@ type bookmark = {
 module type API = sig
   type 'a deferred
 
-  val bookmark : request_info -> string -> (bookmark option) deferred
+  val token : string ref
 
-  val recent_bookmarks : request_info -> ?count:int ->
+  val bookmark : string -> (bookmark option) deferred
+
+  val recent_bookmarks : ?count:int ->
     tag list -> (bookmark list) deferred
 
-  val date_num_bookmarks : request_info -> tag list ->
+  val date_num_bookmarks : tag list ->
     ((Date.t * int) list) deferred
 
-  (*
-  val all_bookmarks : request_info -> ?offset:int -> ?count:int ->
-    ?from:Time.t -> ?to:Time.t -> tag list -> (bookmark list) deferred 
+  val all_bookmarks : ?offset:int -> ?count:int ->
+    ?fromtime:Time.t -> ?totime:Time.t -> tag list -> (bookmark list) deferred 
 
-  val suggest_tag : request_info -> string -> (tag list) deferred
+  val suggest_tag : string -> (tag list * tag list) deferred
 
-  val all_tags : request_info -> ((tag * int) list) deferred
-  *)
+  val all_tags : unit -> ((tag * int) list) deferred
 end
 
 module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
@@ -59,18 +46,20 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   module JSON = Yojson.Basic
 
   type 'a deferred = 'a Deferred.t
+
+  let token = ref ""
   
-  let call_endpoint (info : request_info) (endpoint : Uri.t)
-    : string Deferred.t
+  let call_endpoint (endpoint : Uri.t) : string Deferred.t
   = 
-    let q1 = Uri.add_query_param endpoint ("auth_token", [info.api_token]) in
-    let q2 = Uri.add_query_param q1 ("format", [info.api_format |> string_of_format]) in
-    HTTP.Client.get q2 >>= fun (_, body) -> body |> HTTP.Body.to_string
+    let q1 = Uri.add_query_param' endpoint ("auth_token", !token) in
+    let q2 = Uri.add_query_param' q1 ("format", "json") in
+    HTTP.Client.get q2 >>= fun (_, body) ->
+    body |> HTTP.Body.to_string
   ;;
 
   let base_url endpoint = "https://api.pinboard.in/v1/" ^ endpoint
 
-  let bookmark_of_json (json:JSON.json) : bookmark option = 
+  let bookmark_of_json (json:JSON.json) : bookmark = 
     let url = JSON.Util.member "href" json |> JSON.Util.to_string in
 
     let title = JSON.Util.member "description" json |> JSON.Util.to_string in
@@ -95,37 +84,34 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
 
     let meta = JSON.Util.member "meta" json |> JSON.Util.to_string in
 
-    Some ({ url=url; title=title; description=description; tags=tags;
-            toread=toread; shared=shared; time=time; meta=meta; })
+    { url=url; title=title; description=description; tags=tags;
+      toread=toread; shared=shared; time=time; meta=meta; }
   ;;
 
-  let bookmarks_of_json (json:JSON.json) : (bookmark option) list =
+  let bookmarks_of_json (json:JSON.json) : bookmark list =
     JSON.Util.member "posts" json
     |> JSON.Util.to_list
     |> List.map ~f:bookmark_of_json
   ;;
 
-  let bookmark info url =
+  let bookmark url =
     let q1 = Uri.of_string (base_url "posts/get") in
     let q2 = Uri.add_query_params' q1 [("url", url);("meta", "yes")] in
-    call_endpoint info q2 >>| fun res ->
-    res |> JSON.from_string |> bookmarks_of_json
-        |> List.hd |> Option.value ~default:None
+    call_endpoint q2 >>| fun res ->
+    res |> JSON.from_string |> bookmarks_of_json |> List.hd
   ;;
   
-  let recent_bookmarks info ?(count=15) tags =
+  let recent_bookmarks ?(count=15) tags =
     let q1 = Uri.of_string (base_url "posts/recent") in
     let q2 = Uri.add_query_params' q1 [
       ("count", string_of_int count);
       ("tags", String.concat ~sep:" " tags)
     ] in
-    call_endpoint info q2 >>| fun res ->
+    call_endpoint q2 >>| fun res ->
     res |> JSON.from_string |> bookmarks_of_json
-        |> List.map ~f:(Option.value_map ~default:[] ~f:(fun x -> [x]))
-        |> List.join
   ;;
 
-  let date_num_bookmarks info tags =
+  let date_num_bookmarks tags =
     let process_date (dstr, cstr) =
       let date = Date.of_string dstr in
       let count = cstr |> JSON.Util.to_string |> int_of_string in
@@ -133,22 +119,57 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
     in
     let q1 = Uri.of_string (base_url "posts/dates") in
     let q2 = Uri.add_query_params' q1 [("tags", String.concat ~sep:" " tags)] in
-    call_endpoint info q2 >>| fun res ->
+    call_endpoint q2 >>| fun res ->
     res |> JSON.from_string |> fun json ->
     JSON.Util.member "dates" json
     |> JSON.Util.to_assoc
     |> List.map ~f:process_date
   ;;
 
-  (*
-  val all_bookmarks :
-    request_info -> ?offset:int -> ?count:int -> ?from:Time.t -> ?to:Time.t
-    -> tag list -> (bookmark list) deferred 
+  let all_bookmarks ?(offset=0) ?count ?fromtime ?totime tags =
+    let params = 
+      [("start", string_of_int offset)]
+      |> (fun q -> Option.value_map count ~default:q
+                   ~f:(fun n -> ("results", string_of_int n)::q))
+      |> (fun q -> Option.value_map fromtime ~default:q
+                   ~f:(fun dt -> ("fromdt", Time.to_string_abs dt)::q))
+      |> (fun q -> Option.value_map totime ~default:q
+                   ~f:(fun dt -> ("todt", Time.to_string_abs dt)::q))
+      |> (fun q -> ("tags", String.concat ~sep:" " tags)::q)
+    in
+    let q1 = Uri.of_string (base_url "posts/all") in
+    let q2 = Uri.add_query_params' q1 params in
+    call_endpoint q2 >>| fun res ->
+    res |> JSON.from_string |> JSON.Util.to_list |> List.map ~f:bookmark_of_json
+  ;;
 
-  val suggest_tag : request_info -> string -> (tag list) deferred
+  let suggest_tag url =
+    let q1 = Uri.of_string (base_url "posts/suggest") in
+    let q2 = Uri.add_query_param' q1 ("url", url) in
+    call_endpoint q2 >>| fun res ->
+    res |> JSON.from_string |> JSON.Util.to_list
+        |> List.map ~f:JSON.Util.to_assoc |> fun lst ->
+    let mem_filter mem lst =
+      List.filter ~f:(fun map -> List.Assoc.find map mem |> Option.is_some) lst
+      |> List.hd |> Option.value ~default:[] 
+    in
+    let get_mem mem map =
+      let stringify x =
+        JSON.Util.to_list x |> List.map ~f:JSON.Util.to_string
+      in
+      List.Assoc.find map mem |> Option.value_map ~default:[] ~f:stringify
+    in
+    let popular = lst |> mem_filter "popular" |> get_mem "popular" in
+    let recommended = lst |> mem_filter "recommended" |> get_mem "recommended" in
+    (popular, recommended)
+  ;;
 
-  val all_tags : request_info -> ((tag * int) list) deferred
-  *)
+  let all_tags () =
+    let q1 = Uri.of_string (base_url "tags/get") in
+    call_endpoint q1 >>| fun res ->
+    res |> JSON.from_string |> JSON.Util.to_assoc
+        |> List.map ~f:(fun (tag, n) -> (tag, n |> JSON.Util.to_string |> int_of_string))
+  ;;
 
-end ;;
+end
 
