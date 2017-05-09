@@ -1,8 +1,12 @@
+(* pinboard.ml *)
+
+(* uncomment for utop
 #require "core.top"
 #require "core.syntax"
 #require "async"
 #require "cohttp.async"
 #require "yojson"
+*)
 
 open Core.Std
 
