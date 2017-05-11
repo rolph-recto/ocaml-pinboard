@@ -1,15 +1,15 @@
 (* pinboard.ml *)
 
-(*
- * uncomment for utop
 #require "core.top"
 #require "core.syntax"
+#require "yojson"
 #require "async"
 #require "cohttp.async"
-#require "yojson"
-*)
+#require "lwt"
+#require "cohttp.lwt"
 
 open Core.Std
+module JSON = Yojson.Basic
 
 type tag = string
 
@@ -58,26 +58,31 @@ module type API = sig
   val note : string -> note deferred
 end
 
-module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
-  open Async.Std
-  module HTTP = Cohttp_async
-  module JSON = Yojson.Basic
+module type Web_deferred = sig
+  type 'a t
+  val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
+  val (>>|) : 'a t -> ('a -> 'b) -> 'b t
+  val get : Uri.t -> string t
+end
 
-  type 'a deferred = 'a Deferred.t
+module Make_API (W : Web_deferred)
+  : API with type 'a deferred = 'a W.t
+= struct
+  type 'a deferred = 'a W.t
 
   let token = ref ""
   
-  let call_endpoint (endpoint : Uri.t) : string Deferred.t
+  let call_endpoint (endpoint : Uri.t) : string deferred
   = 
     let q1 = Uri.add_query_param' endpoint ("auth_token", !token) in
     let q2 = Uri.add_query_param' q1 ("format", "json") in
-    HTTP.Client.get q2 >>= fun (_, body) ->
-    body |> HTTP.Body.to_string
+    W.get q2
   ;;
 
   let base_url endpoint = "https://api.pinboard.in/v1/" ^ endpoint
 
   let bookmark_of_json (json:JSON.json) : bookmark = 
+    let open W in
     let url = JSON.Util.member "href" json |> JSON.Util.to_string in
 
     let title = JSON.Util.member "description" json |> JSON.Util.to_string in
@@ -106,12 +111,14 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let bookmarks_of_json (json:JSON.json) : bookmark list =
+    let open W in
     JSON.Util.member "posts" json
     |> JSON.Util.to_list
     |> List.map ~f:bookmark_of_json
   ;;
 
   let bookmark url =
+    let open W in
     let q1 = Uri.of_string (base_url "posts/get") in
     let q2 = Uri.add_query_params' q1 [("url", url);("meta", "yes")] in
     call_endpoint q2 >>| fun res ->
@@ -119,6 +126,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
   
   let recent_bookmarks ?(count=15) tags =
+    let open W in
     let q1 = Uri.of_string (base_url "posts/recent") in
     let q2 = Uri.add_query_params' q1 [
       ("count", string_of_int count);
@@ -129,6 +137,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let date_num_bookmarks tags =
+    let open W in
     let process_date (dstr, cstr) =
       let date = Date.of_string dstr in
       let count = cstr |> JSON.Util.to_string |> int_of_string in
@@ -144,6 +153,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let all_bookmarks ?(offset=0) ?count ?fromtime ?totime tags =
+    let open W in
     let params = 
       [("start", string_of_int offset)]
       |> (fun q -> Option.value_map count ~default:q
@@ -161,6 +171,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let suggest_tag url =
+    let open W in
     let q1 = Uri.of_string (base_url "posts/suggest") in
     let q2 = Uri.add_query_param' q1 ("url", url) in
     call_endpoint q2 >>| fun res ->
@@ -182,6 +193,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let all_tags () =
+    let open W in
     let q1 = Uri.of_string (base_url "tags/get") in
     let kv_to_int (tag, n) = (tag, n |> JSON.Util.to_string |> int_of_string) in
     call_endpoint q1 >>| fun res ->
@@ -190,6 +202,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let note_of_json (has_text : bool) (json : JSON.json) : note =
+    let open W in
     let id = JSON.Util.member "id" json |> JSON.Util.to_string in
     let hash = JSON.Util.member "hash" json |> JSON.Util.to_string in
     let title = JSON.Util.member "title" json |> JSON.Util.to_string in
@@ -206,6 +219,7 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
   
   let all_notes () =
+    let open W in
     let q1 = Uri.of_string (base_url "notes/list") in
     call_endpoint q1 >>| fun res ->
     res |> JSON.from_string |> JSON.Util.to_assoc
@@ -215,9 +229,68 @@ module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
   ;;
 
   let note id =
+    let open W in
     let q1 = Uri.of_string (base_url ("notes/" ^ id)) in
     call_endpoint q1 >>| fun res ->
     res |> JSON.from_string |> note_of_json true
   ;;
 end
+
+(*
+  let call_endpoint (endpoint : Uri.t) : string deferred
+  = 
+    let q1 = Uri.add_query_param' endpoint ("auth_token", !token) in
+    let q2 = Uri.add_query_param' q1 ("format", "json") in
+    HTTP.Client.get q2 >>= fun (_, body) ->
+    body |> HTTP.Body.to_string
+  ;;
+
+module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
+  open Async.Std
+  module HTTP = Cohttp_async
+
+*)
+
+(* Async backend *)
+module Async_web
+  : Web_deferred with type 'a t = 'a Async.Std.Deferred.t
+= struct
+  module HTTP = Cohttp_async
+
+  type 'a t = 'a Async.Std.Deferred.t
+
+  let (>>=) = Async.Std.(>>=)
+
+  let (>>|) = Async.Std.(>>|)
+
+  let get (uri : Uri.t) =
+    HTTP.Client.get uri >>= fun (_, body) -> body |> HTTP.Body.to_string
+  ;;
+end
+
+module AsyncAPI
+  : (API with type 'a deferred = 'a Async.Std.Deferred.t)
+= Make_API(Async_web)
+
+(* Lwt backend *)
+module Lwt_web
+  : Web_deferred with type 'a t = 'a Lwt.t
+= struct
+  module HTTP = Cohttp_lwt_unix
+  module Body = Cohttp_lwt_body
+
+  type 'a t = 'a Lwt.t
+
+  let (>>=) = Lwt.(>>=)
+
+  let (>>|) = Lwt.(>|=)
+
+  let get (uri : Uri.t) =
+    HTTP.Client.get uri >>= fun (_, body) -> body |> Body.to_string
+  ;;
+end
+
+module LwtAPI
+  : (API with type 'a deferred = 'a Lwt.t)
+= Make_API(Lwt_web)
 

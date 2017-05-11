@@ -1,5 +1,4 @@
 open Core.Std
-open Async.Std
 
 type bookmark
 type tag
@@ -74,6 +73,17 @@ module type API = sig
   val note : string -> note deferred
 end
 
-module AsyncAPI : API with type 'a deferred := 'a Deferred.t
+module type Web_deferred = sig
+  type 'a t
+  val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
+  val (>>|) : 'a t -> ('a -> 'b) -> 'b t
+  val get : Uri.t -> string t
+end
+
+module Make_API : functor (W : Web_deferred) -> API with type 'a deferred := 'a W.t
+
+module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t
+
+module LwtAPI : API with type 'a deferred := 'a Lwt.t
 
 

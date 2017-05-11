@@ -15,5 +15,9 @@ Executable "pinboard"
     threads,
     core,
     async,
+    lwt,
     cohttp.async,
-    yojson
+    cohttp,
+    cohttp.lwt,
+    yojson,
+    tls,
