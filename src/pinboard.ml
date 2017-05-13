@@ -33,6 +33,8 @@ type note = {
   text: string;
 }
 
+type req_status = | Success | Err of string
+
 module type API = sig
   type 'a deferred
 
@@ -49,9 +51,19 @@ module type API = sig
   val all_bookmarks : ?offset:int -> ?count:int ->
     ?fromtime:Time.t -> ?totime:Time.t -> tag list -> (bookmark list) deferred 
 
+  val add_bookmark : ?replace:bool -> ?shared:bool -> ?toread:bool ->
+    ?createdat:Time.t -> ?tags:(tag list) ->
+    string -> string -> string -> req_status deferred
+
+  val delete_bookmark : string -> req_status deferred
+
   val suggest_tag : string -> (tag list * tag list) deferred
 
   val all_tags : unit -> ((tag * int) list) deferred
+
+  val delete_tag : string -> req_status deferred
+
+  val rename_tag : string -> string -> req_status deferred
 
   val all_notes : unit -> (note list) deferred
 
@@ -170,6 +182,39 @@ module Make_API (W : Web_deferred)
     res |> JSON.from_string |> JSON.Util.to_list |> List.map ~f:bookmark_of_json
   ;;
 
+  let parse_req_response (field:string) (res:string) : req_status =
+    res |> JSON.from_string |> JSON.Util.member field
+    |> JSON.Util.to_string |> fun code ->
+    if code = "done" then Success else Err(code)
+  ;;
+
+  let add_bookmark ?(replace=true) ?(shared=true) ?(toread=false)
+    ?createdat ?(tags=[]) url title description
+  =
+    let open W in
+    let q1 = Uri.of_string (base_url "posts/add") in
+    let q2 = Uri.add_query_params' q1 [
+      ("url", url);
+      ("description", title);
+      ("extended", description);
+      ("tags", String.concat ~sep:" " tags);
+      ("dt", Option.value_map createdat
+                    ~default:(Time.now () |> Time.to_string)
+                    ~f:Time.to_string);
+      ("replace", if replace then "yes" else "no");
+      ("shared", if shared then "yes" else "no");
+      ("toread", if toread then "yes" else "no")
+    ] in
+    call_endpoint q2 >>| parse_req_response "result_code"
+  ;;
+
+  let delete_bookmark url =
+    let open W in
+    let q1 = Uri.of_string (base_url "posts/delete") in
+    let q2 = Uri.add_query_param' q1 ("url", url) in
+    call_endpoint q2 >>| parse_req_response "result_code"
+  ;;
+
   let suggest_tag url =
     let open W in
     let q1 = Uri.of_string (base_url "posts/suggest") in
@@ -199,6 +244,21 @@ module Make_API (W : Web_deferred)
     call_endpoint q1 >>| fun res ->
     res |> JSON.from_string |> JSON.Util.to_assoc
         |> List.map ~f:kv_to_int
+  ;;
+
+  let delete_tag tag =
+    let open W in
+    let q1 = Uri.of_string (base_url "tags/delete") in
+    let q2 = Uri.add_query_param' q1 ("tag", tag) in
+    call_endpoint q2 >>| parse_req_response "result"
+  ;;
+
+  let rename_tag oldtag newtag =
+    let open W in
+    let q1 = Uri.of_string (base_url "tags/rename") in
+    let q2 = Uri.add_query_params' q1 [("old", oldtag);("new", newtag)] in
+    printf "%s\n" (q2 |> Uri.to_string);
+    call_endpoint q2 >>| parse_req_response "result"
   ;;
 
   let note_of_json (has_text : bool) (json : JSON.json) : note =
@@ -236,21 +296,6 @@ module Make_API (W : Web_deferred)
   ;;
 end
 
-(*
-  let call_endpoint (endpoint : Uri.t) : string deferred
-  = 
-    let q1 = Uri.add_query_param' endpoint ("auth_token", !token) in
-    let q2 = Uri.add_query_param' q1 ("format", "json") in
-    HTTP.Client.get q2 >>= fun (_, body) ->
-    body |> HTTP.Body.to_string
-  ;;
-
-module AsyncAPI : API with type 'a deferred := 'a Async.Std.Deferred.t = struct
-  open Async.Std
-  module HTTP = Cohttp_async
-
-*)
-
 (* Async backend *)
 module Async_web
   : Web_deferred with type 'a t = 'a Async.Std.Deferred.t
@@ -269,7 +314,7 @@ module Async_web
 end
 
 module AsyncAPI
-  : (API with type 'a deferred = 'a Async.Std.Deferred.t)
+  : (API with type 'a deferred := 'a Async.Std.Deferred.t)
 = Make_API(Async_web)
 
 (* Lwt backend *)
@@ -291,6 +336,6 @@ module Lwt_web
 end
 
 module LwtAPI
-  : (API with type 'a deferred = 'a Lwt.t)
+  : (API with type 'a deferred := 'a Lwt.t)
 = Make_API(Lwt_web)
 

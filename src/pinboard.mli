@@ -4,6 +4,8 @@ type bookmark
 type tag
 type note
 
+type req_status
+
 module type API = sig
   (* parametrize the deferred type we're going to use so we can implement
    * Async and Lwt backends *)
@@ -43,6 +45,21 @@ module type API = sig
   val all_bookmarks : ?offset:int -> ?count:int ->
     ?fromtime:Time.t -> ?totime:Time.t -> tag list -> (bookmark list) deferred 
 
+  (* https://api.pinboard.in/v1/posts/add
+   *
+   * Add a bookmark. Arguments with shaded background are required.
+   * Returns true if successfully added, false otherwise
+   *)
+  val add_bookmark : ?replace:bool -> ?shared:bool -> ?toread:bool ->
+    ?createdat:Time.t -> ?tags:(tag list) ->
+    string -> string -> string -> req_status deferred
+
+  (* https://api.pinboard.in/v1/posts/delete
+   *
+   * Delete a bookmark. Arguments with shaded background are required.
+   *)
+  val delete_bookmark : string -> req_status deferred
+
   (* https://api.pinboard.in/v1/posts/suggest
    *
    * Returns a list of popular tags and recommended tags for a given URL.
@@ -57,6 +74,18 @@ module type API = sig
    * were used.
    *)
   val all_tags : unit -> ((tag * int) list) deferred
+
+  (* https://api.pinboard.in/v1/tags/delete
+   *
+   * Delete an existing tag.
+   *)
+  val delete_tag : string -> req_status deferred
+
+  (* https://api.pinboard.in/v1/tags/rename
+   *
+   * Rename an tag, or fold it in to an existing tag
+   *)
+  val rename_tag : string -> string -> req_status deferred
 
   (* https://api.pinboard.in/v1/notes/list
    *
